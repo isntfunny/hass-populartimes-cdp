@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from functools import partial
 from typing import Any
 
 import voluptuous as vol
@@ -45,7 +46,9 @@ class PopularTimesConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # Validate by actually scraping
             result = None
             try:
-                result = await scrape_popular_times(cdp_url, address)
+                result = await self.hass.async_add_executor_job(
+                    partial(scrape_popular_times, cdp_url, address)
+                )
             except ConnectionFailed:
                 errors["base"] = "cannot_connect"
             except Exception:

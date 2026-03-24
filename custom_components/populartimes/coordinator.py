@@ -2,6 +2,7 @@
 
 import logging
 from datetime import timedelta
+from functools import partial
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -27,9 +28,11 @@ class PopularTimesCoordinator(DataUpdateCoordinator):
         self.address = address
 
     async def _async_update_data(self) -> dict:
-        """Fetch data from Google Maps via Playwright CDP."""
+        """Fetch data from Google Maps via pychrome CDP."""
         try:
-            return await scrape_popular_times(self.cdp_url, self.address)
+            return await self.hass.async_add_executor_job(
+                partial(scrape_popular_times, self.cdp_url, self.address)
+            )
         except ConnectionFailed as err:
             raise UpdateFailed(f"CDP connection failed: {err}") from err
         except Exception as err:

@@ -6,6 +6,6 @@
   "dependencies": [],
   "documentation": "https://github.com/isntfunny/hass-populartimes-api",
   "iot_class": "cloud_polling",
-  "requirements": ["playwright>=1.40.0"],
+  "requirements": ["pychrome>=0.2.4"],
   "version": "1.0.0"
 }

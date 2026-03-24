@@ -1,11 +1,12 @@
-"""Playwright CDP scraper for Google Maps popular times data."""
+"""CDP scraper for Google Maps popular times data using pychrome."""
 
 import logging
 import re
+import time
 import urllib.parse
 from datetime import datetime
 
-from playwright.async_api import async_playwright
+import pychrome
 
 from .const import DAYS_EN
 
@@ -24,6 +25,7 @@ RE_HOURLY_DE = re.compile(
 RE_HOURLY_EN = re.compile(
     r"(\d+)% busy at (\d+)\s*(am|pm)"
 )
+
 
 class ScraperError(Exception):
     """Base exception for scraper errors."""
@@ -107,30 +109,40 @@ def _parse_labels(labels: list[str]) -> dict:
     }
 
 
-async def scrape_popular_times(cdp_url: str, address: str) -> dict:
-    """Scrape Google Maps for popular times data via Playwright CDP.
+def _evaluate(tab, expression: str):
+    """Evaluate JS expression on tab and return the result value."""
+    result = tab.Runtime.evaluate(expression=expression, returnByValue=True)
+    return result.get("result", {}).get("value")
+
+
+def scrape_popular_times(cdp_url: str, address: str) -> dict:
+    """Scrape Google Maps for popular times data via pychrome CDP.
+
+    This is a synchronous function — call via asyncio.to_thread() or executor.
 
     Returns dict with keys: name, address, maps_url, live, popular_times.
-    Raises ConnectionFailed or NoDataFound on failure.
+    Raises ConnectionFailed or ScraperError on failure.
     """
-    labels: list[str] = []
-
     try:
-        pw = await async_playwright().start()
+        browser = pychrome.Browser(url=cdp_url)
     except Exception as err:
-        raise ConnectionFailed(f"Failed to start Playwright: {err}") from err
+        raise ConnectionFailed(
+            f"Failed to connect to CDP at {cdp_url}: {err}"
+        ) from err
 
+    tab = None
     try:
-        try:
-            browser = await pw.chromium.connect_over_cdp(cdp_url, timeout=10000)
-        except Exception as err:
-            raise ConnectionFailed(
-                f"Failed to connect to CDP at {cdp_url}: {err}"
-            ) from err
+        tab = browser.new_tab()
+        tab.start()
 
-        context = browser.contexts[0] if browser.contexts else await browser.new_context()
-        page = await context.new_page()
-        await page.set_viewport_size({"width": 1920, "height": 1080})
+        # Enable required domains
+        tab.Page.enable()
+        tab.Runtime.enable()
+
+        # Set viewport
+        tab.Emulation.setDeviceMetricsOverride(
+            width=1920, height=1080, deviceScaleFactor=1, mobile=False
+        )
 
         # Navigate to Google Maps search
         search_url = (
@@ -138,90 +150,89 @@ async def scrape_popular_times(cdp_url: str, address: str) -> dict:
             + urllib.parse.quote_plus(address)
         )
         _LOGGER.debug("Navigating to %s", search_url)
-        await page.goto(search_url, timeout=30000)
-        await page.wait_for_timeout(2000)
+        tab.Page.navigate(url=search_url)
+        time.sleep(5)
 
         # Handle cookie consent (German or English)
-        for consent_text in ["Alle akzeptieren", "Accept all"]:
-            try:
-                btn = page.locator(f"button:has-text('{consent_text}')").first
-                if await btn.is_visible(timeout=3000):
-                    await btn.click()
-                    await page.wait_for_timeout(3000)
-                    break
-            except Exception:
-                continue
-
-        # Wait for page to settle
-        await page.wait_for_timeout(3000)
+        _evaluate(tab, """
+            (() => {
+                const btns = document.querySelectorAll('button');
+                for (const btn of btns) {
+                    const t = (btn.textContent || '').trim();
+                    if (t === 'Alle akzeptieren' || t === 'Accept all') {
+                        btn.click();
+                        return true;
+                    }
+                }
+                return false;
+            })()
+        """)
+        time.sleep(3)
 
         # If we landed on a search results list, click the first result
-        try:
-            first_result = page.locator("a[href*='/maps/place/']").first
-            if await first_result.is_visible(timeout=3000):
-                await first_result.click()
-                # Wait until h1 changes from "Ergebnisse"/"Results"
-                try:
-                    await page.wait_for_function(
-                        """() => {
-                            const h1 = document.querySelector('h1');
-                            return h1 && h1.textContent &&
-                                   h1.textContent !== 'Ergebnisse' &&
-                                   h1.textContent !== 'Results';
-                        }""",
-                        timeout=10000,
-                    )
-                except Exception:
-                    pass
-                await page.wait_for_timeout(3000)
-        except Exception:
-            pass
+        _evaluate(tab, """
+            (() => {
+                const link = document.querySelector("a[href*='/maps/place/']");
+                if (link) { link.click(); return true; }
+                return false;
+            })()
+        """)
+        time.sleep(5)
 
-        # Wait for place details to load
-        await page.wait_for_timeout(2000)
+        # Extract place name
+        place_name = _evaluate(tab, """
+            (() => {
+                const all = document.querySelectorAll('h1');
+                for (const h of all) {
+                    const t = (h.textContent || '').trim();
+                    if (t && t !== 'Ergebnisse' && t !== 'Results') return t;
+                }
+                return null;
+            })()
+        """)
 
-        # Extract place name — find the h1 that isn't "Ergebnisse"/"Results"/empty
-        place_name = await page.evaluate("""() => {
-            const all = document.querySelectorAll('h1');
-            for (const h of all) {
-                const t = (h.textContent || '').trim();
-                if (t && t !== 'Ergebnisse' && t !== 'Results') return t;
-            }
-            return null;
-        }""")
-
-        # Get current URL (resolved Maps URL)
-        maps_url = page.url
+        # Get current URL
+        maps_url = _evaluate(tab, "window.location.href") or ""
 
         # Extract address from the page
-        resolved_address = await page.evaluate("""() => {
-            const btns = document.querySelectorAll('button[aria-label]');
-            for (const btn of btns) {
-                const label = btn.getAttribute('aria-label') || '';
-                if (label.startsWith('Adresse:') || label.startsWith('Address:')) {
-                    return label.replace('Adresse: ', '').replace('Address: ', '').trim();
+        resolved_address = _evaluate(tab, """
+            (() => {
+                const btns = document.querySelectorAll('button[aria-label]');
+                for (const btn of btns) {
+                    const label = btn.getAttribute('aria-label') || '';
+                    if (label.startsWith('Adresse:') || label.startsWith('Address:')) {
+                        return label.replace('Adresse: ', '').replace('Address: ', '').trim();
+                    }
                 }
-            }
-            return null;
-        }""")
+                return null;
+            })()
+        """)
 
         # Extract all busyness aria-labels
-        labels = await page.evaluate("""() => {
-            const els = document.querySelectorAll('[aria-label]');
-            const out = [];
-            for (const el of els) {
-                const l = el.getAttribute('aria-label');
-                if (l && (l.includes('ausgelastet') || l.includes('busy') ||
-                          l.includes('Derzeit') || l.includes('Currently')))
-                    out.push(l);
-            }
-            return out;
-        }""")
-
-        await page.close()
+        labels = _evaluate(tab, """
+            (() => {
+                const els = document.querySelectorAll('[aria-label]');
+                const out = [];
+                for (const el of els) {
+                    const l = el.getAttribute('aria-label');
+                    if (l && (l.includes('ausgelastet') || l.includes('busy') ||
+                              l.includes('Derzeit') || l.includes('Currently')))
+                        out.push(l);
+                }
+                return out;
+            })()
+        """) or []
 
     finally:
-        await pw.stop()
+        if tab is not None:
+            try:
+                tab.stop()
+            except Exception:
+                pass
+            try:
+                browser.close_tab(tab)
+            except Exception:
+                pass
 
     parsed = _parse_labels(labels)
 
