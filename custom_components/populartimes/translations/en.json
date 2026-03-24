@@ -3,28 +3,43 @@
     "step": {
       "user": {
         "title": "Add Popular Times Sensor",
-        "description": "Enter the address of a place and the URL of your Playwright CDP browser.",
+        "description": "Enter the address of a place and the URL of your stealth CDP browser.",
         "data": {
           "address": "Address",
-          "cdp_url": "Playwright CDP URL",
+          "cdp_url": "CDP Browser URL",
           "name": "Sensor name (optional)",
-          "skip_live_check": "Skip live data check"
+          "skip_live_check": "Skip live data check",
+          "scan_interval": "Update interval (minutes)"
         },
         "data_description": {
           "address": "Full address including place name, e.g. \"McDonald's, Main Street 1, Berlin\"",
-          "cdp_url": "URL of your stealth Playwright browser CDP endpoint",
+          "cdp_url": "URL of your stealth CDP browser endpoint",
           "name": "Leave empty to use the place name from Google Maps",
-          "skip_live_check": "Add the sensor even if no popularity data is available (e.g. place is currently closed)"
+          "skip_live_check": "Add the sensor even if no popularity data is available (e.g. place is currently closed)",
+          "scan_interval": "How often to scrape Google Maps (2-60 minutes)"
         }
       }
     },
     "error": {
-      "cannot_connect": "Could not connect to the Playwright CDP browser. Check the URL.",
+      "cannot_connect": "Could not connect to the CDP browser. Check the URL.",
       "no_data": "No popular times data found for this address. Check the address or enable 'Skip live data check'.",
       "unknown": "An unexpected error occurred."
     },
     "abort": {
       "already_configured": "This place is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Popular Times Options",
+        "data": {
+          "scan_interval": "Update interval (minutes)"
+        },
+        "data_description": {
+          "scan_interval": "How often to scrape Google Maps (2-60 minutes)"
+        }
+      }
     }
   }
 }

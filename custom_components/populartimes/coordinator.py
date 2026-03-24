@@ -16,13 +16,15 @@ _LOGGER = logging.getLogger(__name__)
 class PopularTimesCoordinator(DataUpdateCoordinator):
     """Coordinator to fetch popular times data."""
 
-    def __init__(self, hass: HomeAssistant, cdp_url: str, address: str) -> None:
+    def __init__(
+        self, hass: HomeAssistant, cdp_url: str, address: str, scan_interval_min: int = DEFAULT_SCAN_INTERVAL
+    ) -> None:
         """Initialize the coordinator."""
         super().__init__(
             hass,
             _LOGGER,
             name="Popular Times",
-            update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL),
+            update_interval=timedelta(minutes=scan_interval_min),
         )
         self.cdp_url = cdp_url
         self.address = address

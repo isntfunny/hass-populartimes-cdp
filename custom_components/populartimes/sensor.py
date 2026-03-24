@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceEntryType
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
-from .const import DAYS_EN, DOMAIN
+from .const import DOMAIN, DAYS_EN
 from .coordinator import PopularTimesCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -22,7 +24,7 @@ def _get_historical_now(data: dict | None) -> int | None:
     if not data:
         return None
     popular_times = data.get("popular_times", {})
-    now = datetime.now()
+    now = dt_util.now()
     day_name = DAYS_EN[now.weekday()]
     hours = popular_times.get(day_name, [0] * 24)
     if now.hour < len(hours):
@@ -62,10 +64,16 @@ class PopularTimesBaseSensor(CoordinatorEntity[PopularTimesCoordinator], SensorE
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
-        self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_{suffix}"
         self._attr_name = f"{base_name} {suffix}"
         self._attr_icon = icon
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=base_name,
+            entry_type=DeviceEntryType.SERVICE,
+            manufacturer="Google Maps",
+            configuration_url=entry.data.get("maps_url"),
+        )
 
     @property
     def extra_state_attributes(self) -> dict:
