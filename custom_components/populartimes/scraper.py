@@ -208,6 +208,33 @@ def scrape_popular_times(cdp_url: str, address: str) -> dict:
             })()
         """)
 
+        # Extract opening status (e.g. "Geöffnet", "Geschlossen · Öffnet um 10:00")
+        opening_status = _evaluate(tab, """
+            (() => {
+                const spans = document.querySelectorAll('span');
+                for (const s of spans) {
+                    const t = (s.textContent || '').trim();
+                    if (/^(Ge.ffnet|Geschlossen|Open$|Closed)/i.test(t))
+                        return t;
+                }
+                return null;
+            })()
+        """)
+
+        # Extract opening hours per day from aria-labels
+        opening_hours = _evaluate(tab, """
+            (() => {
+                const out = {};
+                const btns = document.querySelectorAll('button[aria-label*="ffnungszeiten kopieren"], button[aria-label*="Copy hours"]');
+                for (const btn of btns) {
+                    const l = btn.getAttribute('aria-label') || '';
+                    const m = l.match(/^(.+?),(.+?),/);
+                    if (m) out[m[1].trim()] = m[2].trim();
+                }
+                return Object.keys(out).length > 0 ? out : null;
+            })()
+        """)
+
         # Extract all busyness aria-labels
         labels = _evaluate(tab, """
             (() => {
@@ -236,10 +263,24 @@ def scrape_popular_times(cdp_url: str, address: str) -> dict:
 
     parsed = _parse_labels(labels)
 
+    # Determine open/closed from status text
+    is_open = None
+    if opening_status:
+        lower = opening_status.lower()
+        if "geöffnet" in lower or "open" == lower:
+            is_open = True
+        elif "geschlossen" in lower or "closed" in lower:
+            is_open = False
+
     return {
         "name": place_name,
         "address": resolved_address or address,
         "maps_url": maps_url,
         "live": parsed["live"],
         "popular_times": parsed["popular_times"],
+        "opening": {
+            "is_open": is_open,
+            "status_text": opening_status,
+            "hours": opening_hours,
+        },
     }
