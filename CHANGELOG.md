@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is intentionally simple so entries can also be reused in GitHub and HACS release notes.
 
+## [1.1.2] - 2026-04-07
+
+### Fixed
+- Fix scraping completely failing on `cloakhq/cloakbrowser` v0.3.20+ (and any modern Chrome) where the `/json/new` HTTP endpoint is disabled. The scraper now creates new browser tabs via the CDP `Target.createTarget` command through an anchor tab, the same approach Playwright uses internally.
+- Patch pychrome's WebSocket receive loop to tolerate multi-message frames sent by newer Chrome versions, which previously crashed the background thread with `Extra data` JSON errors.
+
+### Added
+- Add a standalone `scripts/test_scraper.py` test script that verifies scraping works against a CDP browser without requiring a Home Assistant install.
+
 ## [1.1.1] - 2026-04-05
 
 ### Added

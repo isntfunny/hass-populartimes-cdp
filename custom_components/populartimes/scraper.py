@@ -1,16 +1,69 @@
 """CDP scraper for Google Maps popular times data using pychrome."""
 
+import json
 import logging
 import re
 import time
 import urllib.parse
+import warnings
 from datetime import datetime
 
 import pychrome
+import pychrome.tab
+import requests
+import websocket
 
 from .const import DAYS_EN
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _patched_recv_loop(self) -> None:
+    """Patched pychrome recv loop tolerant to multi-message WS frames.
+
+    Newer Chrome versions occasionally pack multiple CDP JSON messages into a
+    single WebSocket frame, which causes pychrome's stock loop to die with
+    "Extra data: ..." and hang all subsequent CDP calls. We use raw_decode to
+    consume all JSON objects from the frame and skip malformed messages.
+    """
+    decoder = json.JSONDecoder()
+    while not self._stopped.is_set():
+        try:
+            self._ws.settimeout(1)
+            message_json = self._ws.recv()
+        except websocket.WebSocketTimeoutException:
+            continue
+        except (websocket.WebSocketException, OSError):
+            if not self._stopped.is_set():
+                _LOGGER.error("websocket exception", exc_info=True)
+                self._stopped.set()
+            return
+
+        messages = []
+        idx = 0
+        text = message_json.lstrip()
+        while idx < len(text):
+            try:
+                obj, end = decoder.raw_decode(text, idx)
+            except json.JSONDecodeError:
+                _LOGGER.debug("Skipping malformed CDP message: %r", text[idx:idx + 80])
+                break
+            messages.append(obj)
+            idx = end
+            while idx < len(text) and text[idx] in " \t\n\r":
+                idx += 1
+
+        for message in messages:
+            if "method" in message:
+                self.event_queue.put(message)
+            elif "id" in message:
+                if message["id"] in self.method_results:
+                    self.method_results[message["id"]].put(message)
+            else:
+                warnings.warn("unknown message: %s" % message)
+
+
+pychrome.tab.Tab._recv_loop = _patched_recv_loop
 
 # Regex patterns for German and English aria-labels
 RE_LIVE_DE = re.compile(
@@ -115,6 +168,68 @@ def _evaluate(tab, expression: str):
     return result.get("result", {}).get("value")
 
 
+def _list_tabs(cdp_url: str) -> list[dict]:
+    """List CDP tabs via /json/list. Filters out non-page targets."""
+    resp = requests.get(cdp_url.rstrip("/") + "/json/list", timeout=10)
+    resp.raise_for_status()
+    return [t for t in resp.json() if t.get("type") == "page"]
+
+
+def _create_target_tab(cdp_url: str) -> tuple[pychrome.Tab, str]:
+    """Create a new tab via Target.createTarget on an anchor tab.
+
+    Modern Chrome (111+) disables /json/new for security. We instead pick any
+    existing tab as an anchor and ask it to create a new target via CDP, then
+    look the new target up in /json/list to get its WebSocket URL.
+
+    Returns (tab, target_id). Caller must call _close_target_tab when done.
+    """
+    existing = _list_tabs(cdp_url)
+    if not existing:
+        raise ConnectionFailed(
+            "No existing tabs in CDP browser to anchor on. "
+            "The browser must have at least one open page."
+        )
+
+    anchor = pychrome.Tab(**existing[0])
+    anchor.start()
+    try:
+        result = anchor.call_method("Target.createTarget", url="about:blank")
+        target_id = result.get("targetId")
+        if not target_id:
+            raise ConnectionFailed(f"Target.createTarget returned no targetId: {result}")
+    finally:
+        try:
+            anchor.stop()
+        except Exception:
+            pass
+
+    # Find the new target in /json/list to get its webSocketDebuggerUrl
+    for _ in range(10):
+        for t in _list_tabs(cdp_url):
+            if t.get("id") == target_id:
+                return pychrome.Tab(**t), target_id
+        time.sleep(0.2)
+
+    raise ConnectionFailed(f"New target {target_id} did not appear in /json/list")
+
+
+def _close_target_tab(cdp_url: str, target_id: str) -> None:
+    """Close a target via Target.closeTarget on an anchor tab."""
+    try:
+        existing = _list_tabs(cdp_url)
+        if not existing:
+            return
+        anchor = pychrome.Tab(**existing[0])
+        anchor.start()
+        try:
+            anchor.call_method("Target.closeTarget", targetId=target_id)
+        finally:
+            anchor.stop()
+    except Exception as err:
+        _LOGGER.debug("Failed to close target %s: %s", target_id, err)
+
+
 def scrape_popular_times(cdp_url: str, address: str) -> dict:
     """Scrape Google Maps for popular times data via pychrome CDP.
 
@@ -123,16 +238,18 @@ def scrape_popular_times(cdp_url: str, address: str) -> dict:
     Returns dict with keys: name, address, maps_url, live, popular_times.
     Raises ConnectionFailed or ScraperError on failure.
     """
-    try:
-        browser = pychrome.Browser(url=cdp_url)
-    except Exception as err:
-        raise ConnectionFailed(
-            f"Failed to connect to CDP at {cdp_url}: {err}"
-        ) from err
-
     tab = None
+    target_id = None
     try:
-        tab = browser.new_tab()
+        try:
+            tab, target_id = _create_target_tab(cdp_url)
+        except ConnectionFailed:
+            raise
+        except Exception as err:
+            raise ConnectionFailed(
+                f"Failed to create new CDP target at {cdp_url}: {err}"
+            ) from err
+
         tab.start()
 
         # Enable required domains
@@ -256,10 +373,8 @@ def scrape_popular_times(cdp_url: str, address: str) -> dict:
                 tab.stop()
             except Exception:
                 pass
-            try:
-                browser.close_tab(tab)
-            except Exception:
-                pass
+        if target_id is not None:
+            _close_target_tab(cdp_url, target_id)
 
     parsed = _parse_labels(labels)
 
