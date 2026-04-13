@@ -326,17 +326,24 @@ def scrape_popular_times(cdp_url: str, address: str) -> dict:
         """)
 
         # Extract opening status (e.g. "Geöffnet", "Geschlossen · Öffnet um 10:00")
-        opening_status = _evaluate(tab, """
-            (() => {
-                const spans = document.querySelectorAll('span');
-                for (const s of spans) {
-                    const t = (s.textContent || '').trim();
-                    if (/^(Ge.ffnet|Geschlossen|Open$|Closed)/i.test(t))
-                        return t;
-                }
-                return null;
-            })()
-        """)
+        # Retry up to 2 extra times if the span hasn't rendered yet.
+        opening_status = None
+        for _attempt in range(3):
+            opening_status = _evaluate(tab, """
+                (() => {
+                    const spans = document.querySelectorAll('span');
+                    for (const s of spans) {
+                        const t = (s.textContent || '').trim();
+                        if (/^(Ge.ffnet|Geschlossen|Open$|Closed)/i.test(t))
+                            return t;
+                    }
+                    return null;
+                })()
+            """)
+            if opening_status is not None:
+                break
+            _LOGGER.debug("Opening status not found (attempt %d/3), retrying", _attempt + 1)
+            time.sleep(1 + _attempt)  # 1s, then 2s
 
         # Extract opening hours per day from aria-labels
         opening_hours = _evaluate(tab, """
