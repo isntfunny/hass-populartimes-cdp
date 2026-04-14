@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is intentionally simple so entries can also be reused in GitHub and HACS release notes.
 
+## [1.1.3] - 2026-04-14
+
+### Fixed
+- Retry opening-status extraction up to three times so the sensor no longer falls back to `unknown` when the status span has not rendered yet on slower Maps loads.
+- Close the orphan CDP target when the newly created tab does not appear in `/json/list`, preventing stale `about:blank` tabs from piling up in the browser.
+
+### Added
+- Ship a HACS brand icon and logo so the integration has a custom tile in the HACS store.
+
 ## [1.1.2] - 2026-04-07
 
 ### Fixed
